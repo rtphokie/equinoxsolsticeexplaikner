@@ -2,71 +2,110 @@ import unittest
 import ephem
 import math
 import matplotlib.pyplot as plt
+import matplotlib as mpl
 from mpl_toolkits.basemap import Basemap
 import cv2
 import numpy as np
-import os
+import configparser
+import shutil
+import sys
+import os, time
+import warnings
+warnings.filterwarnings("ignore", module="matplotlib")
+
+
+import unittest
 from os.path import isfile, join
 from tqdm import tqdm
 fourcc = cv2.VideoWriter_fourcc(*"mp4v")
 cmap = plt.cm.get_cmap('Greys')
 
+class Config():
+    def __init__(self, future_events=False):
+        self.type = type
+        self.datestring = "%Y-%m-%d %H:%M"
+        self.filename = "astroreport.ini"
+        self.future_events = future_events
+        try:
+            self.read_opts = ConfigParser.ConfigParser()
+        except:
+            self.read_opts = configparser.ConfigParser()
+        self.config = self.read_config()
 
-def dd_dms(lat,lon):
-   latstr = "%6.1f" % abs(round(lat, 1))
-   if lat < 0:
-       latstr += "ºS"
-   else:
-       latstr += "ºN"
-   lonstr = "%6.1f" % round(lat, 1)
-   if lon < 0:
-       lonstr += "W"
-   else:
-       lonstr += "E"
-   return (f"{latstr}")
-   return (f"{latstr} {lonstr}")
+    def read_config(self, parse=True):
+        matrix = dict()
+        self.read_opts.read(self.filename)
+        for section in self.read_opts.sections():
+            matrix[section] = dict()
+            for p, v in self.read_opts. items(section):
+                matrix[section][p] = v
+        return matrix
+
+def read_config():
+    thing = Config()
+    config = thing.read_config()
+    return config
 
 def plotonmap(obs, sun_lat, sun_lon,
               city_lat, city_lon, city,
               projection='ortho',
-              redraw=True,
+              redraw=False,
               bluemarble=False):
-    filename ="images/%s/plot_%s.png" % (city, obs.date.datetime().strftime("%Y%m%d"))
+    if os.path.exists("movies/%s.mp4" % city):
+        return
+
+    filename ="images/%s/plot_%s_00.png" % (city, obs.date.datetime().strftime("%Y%m%d"))
 
     if not redraw and os.path.exists(filename):
-        pass
+        return
     else:
         plt.style.use('dark_background')
-        plt.figure(figsize=(16, 9))
-        img = plt.imread("milkyway.jpg")
-        plt.imshow(img, zorder=0, extent=[-100, 8.0, 1.0, 7.0])
-
-        print (f"sunlon {sun_lon} sunlat {sun_lat}")
-        m = Basemap(projection=projection, resolution='c', lat_0=20, lon_0=city_lon)
-        if bluemarble:
-            m.bluemarble(scale=0.5);
-        else:
-            water=cmap(0.8)
-            land=cmap(0.6)
-            m.fillcontinents(color=land, lake_color=water)
-            m.drawmapboundary(fill_color=water)
-            # m.drawcoastlines(color=water)
-
-        citydot(m, city_lat, city_lon, 'white')
-        sundot(m, sun_lat, sun_lon, 'y', label='subsolar')
-        draw_parallel(m, sun_lat, city_lon, color='yellow')
+        plt.figure(figsize=(19.2, 10.80))
+        m = Basemap(projection=projection, resolution='l', lat_0=20, lon_0=city_lon)
+        m.bluemarble()
 
         # draw terminator
-        _ = m.nightshade(obs.date.datetime(), delta=0.6, alpha=0.6,)
+        _ = m.nightshade(obs.date.datetime(), delta=0.7, alpha=0.5,)
+
+        # draw tropics and equator
         draw_parallel(m, 23.5, city_lon, color='ivory', label="Tropic of\nCancer")
         draw_parallel(m, -23.5, city_lon, color='ivory', label="Tropic of\nCapricorn")
         draw_parallel(m, 0, city_lon, color='ivory', label='Equator')
 
-        datestring = obs.date.datetime().strftime("%Y-%m-%d")
-        plt.annotate(datestring, xy=(10, 10), fontsize=20, textcoords='data', color='w')
+        # mark city
+        citydot(m, city_lat, city_lon, 'white')
 
-        plt.savefig(filename)
+        # mark sun position
+        sundot(m, sun_lat, sun_lon, 'y', label='subsolar')
+        draw_parallel(m, sun_lat, city_lon, color='yellow')
+
+        datestring = obs.date.datetime().strftime("%Y-%m-%d")
+        frames = 1
+        if '6-21' in datestring or '12-21' in datestring or '6-.8020' in datestring:
+            datestring += " Solstice"
+            frames=20
+        if '3-19' in datestring or '9-23' in datestring:
+            datestring += " Equinox"
+            frames = 40
+        plt.annotate(datestring, xy=(10, 10), fontsize=20, textcoords='data', color='w')
+        plt.savefig(filename, transparent=True)
         plt.close()
+        from PIL import Image
+        fg = Image.open(filename, 'r')
+        bg = Image.open('starfield.png', 'r')
+        text_img = Image.new('RGBA', (1920, 1080), (0, 0, 0, 0))
+        text_img.paste(bg, (0, 0))
+        text_img.paste(fg, (0, 0), mask=fg)
+        text_img.save(filename, format="png")
+
+        for x in range(1,frames):
+            filename2 = "images/%s/plot_%s_%02d.png" % (city,
+                                                        obs.date.datetime().strftime("%Y%m%d"),
+                                                        x
+                                                        )
+            shutil.copyfile(filename, filename2 )
+
+
 
 
 def citydot(m, lat, lon, color, label="", labellon=-98, markersize=16):
@@ -94,9 +133,10 @@ def draw_parallel(m, lat, lon, color='yellow', label=None, fontsize=18, labellon
 
 def makemovie(city):
     pathIn = './images/%s/' % city
-    pathOut = '%s.mp4' % city
+    pathOut = 'movies/%s.mp4' % city
+    smallPathOut = 'movies_small/%s.mp4' % city
     size=None
-    fps = 10.0
+    fps = 25.0
     frame_array = []
     files = [f for f in os.listdir(pathIn) if isfile(join(pathIn, f))]
     # for sorting the file names properly
@@ -110,13 +150,16 @@ def makemovie(city):
         filename = pathIn + files[i]
         # reading each files
         img = cv2.imread(filename)
-        height, width, layers = img.shape
-        size = (width, height)
-
-        # inserting the frames into an image array
+        print (filename)
+        try:
+            height, width, layers = img.shape
+            size = (width, height)
+        except:
+            print(f"error in {filename}")
+            return
         frame_array.append(img)
-    if size is None:
-        print ("no frames found")
+    if len(frame_array) <= 1:
+        print (f"no frames found for {city}")
     else:
         out = cv2.VideoWriter(pathOut, fourcc, fps, size)
         for i in range(len(frame_array)):
@@ -124,7 +167,8 @@ def makemovie(city):
             out.write(frame_array[i])
         out.release()
         import subprocess
-        subprocess.call(['open', pathOut])
+        subprocess.call(['ffmpeg', '-y', '-i', pathOut, '-crf', '35', smallPathOut])
+        subprocess.call(['open', smallPathOut])
 
 def subsolarpoint(obs, body=None):
     if body is None:
@@ -139,53 +183,73 @@ def subsolarpoint(obs, body=None):
     body_lat = math.degrees(body.dec)
     return body_lon, body_lat
 
-
-def runitall(city_lat, city_lon, city):
+def runitall(city_lat, city_lon, city, flush=False):
+    os.environ['export OBJC_DISABLE_INITIALIZE_FORK_SAFETY']='YES'
     import shutil
     obs = ephem.Observer()
     obs.lat = str(city_lat)
     obs.lon = str(city_lon)
     # obs.desc = city
     obs.date = ephem.date('2019/06/20 12:00')
-    try:
+    if flush:
         shutil.rmtree('images/%s' % city)
-    except:
         os.makedirs('images/%s' % city )
     if not os.path.exists('images/%s' % city):
         os.makedirs('images/%s' % city)
-    for x in tqdm(range(0, 30)):
+    child_pids = set()
+    concurency = 12
+    # for x in tqdm(range(0, 365), unit='day'):
+    for x in tqdm(range(0,366), unit='day'):
         obs.date = obs.next_rising(ephem.Sun())
+        obs.date += ephem.minute*15
         sun_lon, sun_lat = subsolarpoint(obs)
-        print (obs.lat, obs.lon)
-        plotonmap(obs, sun_lat, sun_lon, city_lat, city_lon, city,
-                  projection='ortho', bluemarble=True)
+        while len(child_pids) >= concurency:
+            for pid in child_pids:
+                try:
+                    os.waitpid(pid, 0)
+                except:
+                    pass
+            child_pids = set()  # all subprocesses are done
+        child_pid = os.fork()
+        if child_pid == 0:
+            #child
+            plotonmap(obs, sun_lat, sun_lon, city_lat, city_lon, city)
+            os._exit(0)
+        else:
+            child_pids.add(child_pid)
     makemovie(city)
 
 class MyTestCase(unittest.TestCase):
     def test_images(self):
-        lat = 35.7796
-        lon = -78.6382
-        city = "Raleigh"
-        runitall(lat, lon, city)
+        foo = read_config()
+        for k, v in foo.items():
+            runitall(float(v['lat']), float(v['lon']), v['city'])
 
     def test_map(self):
         # 35.7796
         obs = ephem.Observer()
         obs.lat = "35.7796"
         obs.lon = "-78.6382"
-        obs.date = ephem.date('2019/06/21 12:00')
+        obs.date = ephem.date('2019/12/21 0:00')
         obs.date = obs.next_rising(ephem.Sun())
-        print (obs.date)
         sun_lon, sun_lat = subsolarpoint(obs)
-        a = plotonmap(obs, sun_lat, sun_lon, 35.7796, -78.6382, 'TEST', projection='ortho', bluemarble=True)
-
-
-
+        a = plotonmap(obs, sun_lat, sun_lon, 35.7796, -78.6382, 'TEST', redraw=True)
 
     def test_movie(self):
         makemovie()
 
+    def test_subp(self):
+        from threading import Thread
 
+    def test_c(self):
+        foo = read_config()
+        for k, v in foo.items():
+            print (k, v['city'], float(v['lat']), float(v['lon']))
 
 if __name__ == '__main__':
-    unittest.main()
+    foo = read_config()
+    for k, v in tqdm(sorted(foo.items()), unit='city'):
+        print (v['city'])
+        runitall(float(v['lat']), float(v['lon']), v['city'])
+
+    #https://www.ps2pdf.com/compress-mp4
